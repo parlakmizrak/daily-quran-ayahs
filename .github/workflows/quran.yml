@@ -111,6 +111,16 @@ jobs:
               if not result.get("ok"):
                   raise ValueError(f"Telegram rejected the message: {result}")
 
+          def format_page(blocks, continued=False):
+              heading = "Daily Qur'an Reading"
+              if continued:
+                  heading += " (continued)"
+              footer = (
+                  "English: Sahih International\n"
+                  "Arabic: Uthmani script • Source: Quran.com"
+              )
+              return heading + "\n\n" + "\n\n".join(blocks) + "\n\n" + footer
+
           token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
           channel = os.environ.get("CHANNEL_ID", "")
           if not token or not channel:
@@ -127,16 +137,6 @@ jobs:
               print("All 6236 ayahs have already been posted")
               raise SystemExit(0)
 
-                    def format_page(blocks, continued=False):
-              heading = "Daily Qur'an Reading"
-              if continued:
-                  heading += " (continued)"
-              footer = (
-                  "English: Sahih International\n"
-                  "Arabic: Uthmani script • Source: Quran.com"
-              )
-              return heading + "\n\n" + "\n\n".join(blocks) + "\n\n" + footer
-
           blocks = []
           fetched = 0
           for _ in range(DAILY_COUNT):
@@ -148,10 +148,9 @@ jobs:
                   surah = arabic["surah"]
                   reference = f"{surah['number']}:{arabic['numberInSurah']}"
                   heading = f"{surah['englishName']} — {reference}"
-                  blocks.append({
-                      "heading": heading,
-                      "text": f"{heading}\n\n{arabic['text']}\n\n{english['text']}",
-                  })
+                  blocks.append(
+                      f"{heading}\n\n{arabic['text']}\n\n{english['text']}"
+                  )
                   fetched += 1
               except Exception as error:
                   print(f"Source stopped at global ayah {global_number}: {error}")
@@ -160,10 +159,10 @@ jobs:
           pages = []
           current_blocks = []
           for block in blocks:
-              candidate = current_blocks + [block["text"]]
+              candidate = current_blocks + [block]
               if current_blocks and len(format_page(candidate, bool(pages))) > 4000:
                   pages.append(current_blocks)
-                  current_blocks = [block["text"]]
+                  current_blocks = [block]
               else:
                   current_blocks = candidate
           if current_blocks:
@@ -173,9 +172,7 @@ jobs:
           sent_messages = 0
           for page in pages:
               try:
-                  send_message(
-                      token, channel, format_page(page, sent_messages > 0)
-                  )
+                  send_message(token, channel, format_page(page, sent_messages > 0))
               except Exception as error:
                   print(f"Telegram stopped at global ayah {next_ayah + posted}: {error}")
                   break
@@ -190,7 +187,6 @@ jobs:
               f"Posted {posted} ayahs in {sent_messages} message(s); "
               f"next global ayah is {next_ayah}"
           )
-          
           PY
       - name: Save reading position
         run: |
