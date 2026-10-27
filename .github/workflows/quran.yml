@@ -1,0 +1,125 @@
+name: Daily Quran Ayahs
+
+on:
+  schedule:
+    - cron: "0 23 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: daily-quran-ayahs
+  cancel-in-progress: false
+
+jobs:
+  post-ayahs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Post daily ayahs
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
+        run: |
+          python - <<'PY'
+          import json
+          import os
+          import time
+          from pathlib import Path
+          from urllib.parse import urlencode
+          from urllib.request import Request, urlopen
+
+          TOTAL_AYAHS = 6236
+          DAILY_COUNT = 7
+
+          def get_ayah(number):
+              url = (
+                  f"https://api.alquran.cloud/v1/ayah/{number}"
+                  "/editions/quran-uthmani,en.sahih"
+              )
+              request = Request(url, headers={"User-Agent": "DailyQuranAyahs/1.0"})
+              with urlopen(request, timeout=25) as response:
+                  payload = json.loads(response.read())
+              if payload.get("code") != 200:
+                  raise ValueError(f"Quran source returned {payload}")
+              editions = {
+                  item["edition"]["identifier"]: item for item in payload["data"]
+              }
+              arabic = editions["quran-uthmani"]
+              english = editions["en.sahih"]
+              if arabic["numberInSurah"] != english["numberInSurah"]:
+                  raise ValueError(f"Mismatched translations for global ayah {number}")
+              return arabic, english
+
+          def send_message(token, channel, text):
+              data = urlencode({"chat_id": channel, "text": text}).encode()
+              request = Request(
+                  f"https://api.telegram.org/bot{token}/sendMessage", data=data
+              )
+              with urlopen(request, timeout=25) as response:
+                  result = json.loads(response.read())
+              if not result.get("ok"):
+                  raise ValueError(f"Telegram rejected the message: {result}")
+
+          token = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+          channel = os.environ.get("CHANNEL_ID", "")
+          if not token or not channel:
+              raise SystemExit("Telegram secrets are missing")
+
+          state_path = Path("state.json")
+          if state_path.exists():
+              state = json.loads(state_path.read_text())
+          else:
+              state = {"next_ayah": 1}
+          next_ayah = int(state.get("next_ayah", 1))
+
+          if next_ayah > TOTAL_AYAHS:
+              print("All 6236 ayahs have already been posted")
+              raise SystemExit(0)
+
+          posted = 0
+          for _ in range(DAILY_COUNT):
+              if next_ayah > TOTAL_AYAHS:
+                  break
+              try:
+                  arabic, english = get_ayah(next_ayah)
+                  surah = arabic["surah"]
+                  reference = f"{surah['number']}:{arabic['numberInSurah']}"
+                  heading = (
+                      f"{surah['englishName']} "
+                      f"({surah['englishNameTranslation']}) — {reference}"
+                  )
+                  arabic_text = arabic["text"].lstrip("\ufeff")
+                  message = (
+                      f"{heading}\n\n"
+                      f"Arabic (Uthmani script):\n{arabic_text}\n\n"
+                      f"English — Sahih International:\n{english['text']}\n\n"
+                      "Text source: AlQuran Cloud"
+                  )
+                  send_message(token, channel, message)
+              except Exception as error:
+                  print(f"Stopped at global ayah {next_ayah}: {error}")
+                  break
+              next_ayah += 1
+              posted += 1
+              time.sleep(1)
+
+          state = {"next_ayah": next_ayah}
+          state_path.write_text(json.dumps(state, indent=2) + "\n")
+          print(f"Posted {posted} ayahs; next global ayah is {next_ayah}")
+          PY
+      - name: Save reading position
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add state.json
+          if ! git diff --cached --quiet; then
+            git commit -m "Update Quran reading position"
+            git pull --rebase origin main
+            git push
+          fi
+          
