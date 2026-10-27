@@ -127,35 +127,70 @@ jobs:
               print("All 6236 ayahs have already been posted")
               raise SystemExit(0)
 
-          posted = 0
+                    def format_page(blocks, continued=False):
+              heading = "Daily Qur'an Reading"
+              if continued:
+                  heading += " (continued)"
+              footer = (
+                  "English: Sahih International\n"
+                  "Arabic: Uthmani script • Source: Quran.com"
+              )
+              return heading + "\n\n" + "\n\n".join(blocks) + "\n\n" + footer
+
+          blocks = []
+          fetched = 0
           for _ in range(DAILY_COUNT):
-              if next_ayah > TOTAL_AYAHS:
+              if next_ayah + fetched > TOTAL_AYAHS:
                   break
+              global_number = next_ayah + fetched
               try:
-                  arabic, english = get_ayah(next_ayah)
+                  arabic, english = get_ayah(global_number)
                   surah = arabic["surah"]
                   reference = f"{surah['number']}:{arabic['numberInSurah']}"
-                  heading = (
-                      f"{surah['englishName']} "
-                      f"({surah['englishNameTranslation']}) — {reference}"
-                  )
-                  message = (
-                      f"{heading}\n\n"
-                      f"Arabic (Uthmani script):\n{arabic['text']}\n\n"
-                      f"English — Sahih International:\n{english['text']}\n\n"
-                      "Text source: Quran.com"
-                  )
-                  send_message(token, channel, message)
+                  heading = f"{surah['englishName']} — {reference}"
+                  blocks.append({
+                      "heading": heading,
+                      "text": f"{heading}\n\n{arabic['text']}\n\n{english['text']}",
+                  })
+                  fetched += 1
               except Exception as error:
-                  print(f"Stopped at global ayah {next_ayah}: {error}")
+                  print(f"Source stopped at global ayah {global_number}: {error}")
                   break
-              next_ayah += 1
-              posted += 1
+
+          pages = []
+          current_blocks = []
+          for block in blocks:
+              candidate = current_blocks + [block["text"]]
+              if current_blocks and len(format_page(candidate, bool(pages))) > 4000:
+                  pages.append(current_blocks)
+                  current_blocks = [block["text"]]
+              else:
+                  current_blocks = candidate
+          if current_blocks:
+              pages.append(current_blocks)
+
+          posted = 0
+          sent_messages = 0
+          for page in pages:
+              try:
+                  send_message(
+                      token, channel, format_page(page, sent_messages > 0)
+                  )
+              except Exception as error:
+                  print(f"Telegram stopped at global ayah {next_ayah + posted}: {error}")
+                  break
+              posted += len(page)
+              sent_messages += 1
               time.sleep(1)
 
+          next_ayah += posted
           state = {"next_ayah": next_ayah}
           state_path.write_text(json.dumps(state, indent=2) + "\n")
-          print(f"Posted {posted} ayahs; next global ayah is {next_ayah}")
+          print(
+              f"Posted {posted} ayahs in {sent_messages} message(s); "
+              f"next global ayah is {next_ayah}"
+          )
+          
           PY
       - name: Save reading position
         run: |
