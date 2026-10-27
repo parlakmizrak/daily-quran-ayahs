@@ -26,8 +26,10 @@ jobs:
           CHANNEL_ID: ${{ secrets.CHANNEL_ID }}
         run: |
           python - <<'PY'
+          import html
           import json
           import os
+          import re
           import time
           from pathlib import Path
           from urllib.parse import urlencode
@@ -35,24 +37,68 @@ jobs:
 
           TOTAL_AYAHS = 6236
           DAILY_COUNT = 7
+          AYAH_COUNTS = (
+              7, 286, 200, 176, 120, 165, 206, 75, 129, 109, 123, 111,
+              43, 52, 99, 128, 111, 110, 98, 135, 112, 78, 118, 64,
+              77, 227, 93, 88, 69, 60, 34, 30, 73, 54, 45, 83, 182,
+              88, 75, 85, 54, 53, 89, 59, 37, 35, 38, 29, 18, 45,
+              60, 49, 62, 55, 78, 96, 29, 22, 24, 13, 14, 11, 11,
+              18, 12, 12, 30, 52, 52, 44, 28, 28, 20, 56, 40, 31,
+              50, 40, 46, 42, 29, 19, 36, 25, 22, 17, 19, 26, 30,
+              20, 15, 21, 11, 8, 8, 19, 5, 8, 8, 11, 11, 8, 3,
+              9, 5, 4, 7, 3, 6, 3, 5, 4, 5, 6,
+          )
+          CHAPTER_CACHE = {}
 
-          def get_ayah(number):
-              url = (
-                  f"https://api.alquran.cloud/v1/ayah/{number}"
-                  "/editions/quran-uthmani,en.sahih"
-              )
+          def fetch_json(url):
               request = Request(url, headers={"User-Agent": "DailyQuranAyahs/1.0"})
               with urlopen(request, timeout=25) as response:
-                  payload = json.loads(response.read())
-              if payload.get("code") != 200:
-                  raise ValueError(f"Quran source returned {payload}")
-              editions = {
-                  item["edition"]["identifier"]: item for item in payload["data"]
+                  return json.loads(response.read())
+
+          def global_to_reference(number):
+              remaining = number
+              for surah_number, count in enumerate(AYAH_COUNTS, start=1):
+                  if remaining <= count:
+                      return surah_number, remaining
+                  remaining -= count
+              raise ValueError(f"Invalid global ayah number: {number}")
+
+          def get_chapter(number):
+              if number not in CHAPTER_CACHE:
+                  url = f"https://api.quran.com/api/v4/chapters/{number}?language=en"
+                  CHAPTER_CACHE[number] = fetch_json(url)["chapter"]
+              return CHAPTER_CACHE[number]
+
+          def clean_translation(text):
+              text = re.sub(r"<sup[^>]*>.*?</sup>", "", text, flags=re.S)
+              text = re.sub(r"<[^>]+>", "", text)
+              return " ".join(html.unescape(text).split())
+
+          def get_ayah(number):
+              surah_number, ayah_number = global_to_reference(number)
+              verse_key = f"{surah_number}:{ayah_number}"
+              url = (
+                  f"https://api.quran.com/api/v4/verses/by_key/{verse_key}"
+                  "?translations=20&fields=text_uthmani"
+              )
+              verse = fetch_json(url)["verse"]
+              translations = [
+                  item for item in verse.get("translations", [])
+                  if item.get("resource_id") == 20
+              ]
+              if not translations:
+                  raise ValueError(f"Sahih International missing for {verse_key}")
+              chapter = get_chapter(surah_number)
+              arabic = {
+                  "text": verse["text_uthmani"],
+                  "numberInSurah": ayah_number,
+                  "surah": {
+                      "number": surah_number,
+                      "englishName": chapter["name_simple"],
+                      "englishNameTranslation": chapter["translated_name"]["name"],
+                  },
               }
-              arabic = editions["quran-uthmani"]
-              english = editions["en.sahih"]
-              if arabic["numberInSurah"] != english["numberInSurah"]:
-                  raise ValueError(f"Mismatched translations for global ayah {number}")
+              english = {"text": clean_translation(translations[0]["text"])}
               return arabic, english
 
           def send_message(token, channel, text):
@@ -93,12 +139,11 @@ jobs:
                       f"{surah['englishName']} "
                       f"({surah['englishNameTranslation']}) — {reference}"
                   )
-                  arabic_text = arabic["text"].lstrip("\ufeff")
                   message = (
                       f"{heading}\n\n"
-                      f"Arabic (Uthmani script):\n{arabic_text}\n\n"
+                      f"Arabic (Uthmani script):\n{arabic['text']}\n\n"
                       f"English — Sahih International:\n{english['text']}\n\n"
-                      "Text source: AlQuran Cloud"
+                      "Text source: Quran.com"
                   )
                   send_message(token, channel, message)
               except Exception as error:
@@ -122,4 +167,3 @@ jobs:
             git pull --rebase origin main
             git push
           fi
-          
